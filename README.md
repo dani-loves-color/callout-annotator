@@ -19,6 +19,10 @@ relabeling.
   image will look at native resolution before exporting.
 - Export a flattened PNG at a chosen resolution (default: long edge capped at
   800px, matching a common manuals workflow) or at full native resolution.
+- Turn any callout into a clickable hotspot by giving it a link URL (e.g. a
+  store page or a sub-assembly drawing), then export an interactive HTML
+  image map — either as a downloadable `.html` file or copied straight to
+  the clipboard to paste into your own site's code.
 - Save/reopen a project as JSON (image + callouts + styles), so diagrams stay
   editable instead of being one-shot exports.
 
@@ -57,6 +61,51 @@ so this works from a project subpath like
 **Vercel / Netlify**: point either at this repo with build command
 `npm run build` and output directory `dist` — no extra config needed.
 
+## Hotspots / image map export
+
+Any callout can carry an optional link URL (set it in the callout list in
+the sidebar; there's a sanity-check button next to the field that opens the
+link in a new tab). A URL doesn't need a scheme — `www.example.com` is
+automatically treated as `https://www.example.com`, both by the sanity-check
+button and in the exported links. Callouts without a URL behave exactly as
+before — links are entirely optional, so a drawing can have 30 callouts and
+only 5 of them clickable.
+
+Optionally set a **link title** too — it's what shows up on mouse hover.
+The callout's notes field is always used as the accessible `alt` text; the
+link title defaults to matching it, but you can give the hover text
+different wording (e.g. "Buy replacement part" vs. a longer note).
+
+Clicking a badge in the editor always just selects/drags it — links are
+never followed there. They only become active in the exported HTML.
+
+Because a flattened PNG can't contain real links, hotspots need a separate
+export. Both options produce a native `<img>` + `<map>`/`<area>` — the
+pattern from the [W3C WAI image map
+tutorial](https://www.w3.org/WAI/tutorials/images/imagemap/) — rather than
+absolutely-positioned overlay elements, so each hotspot is a real link with
+a proper `alt` the way screen readers and other assistive/text-based tooling
+expect. Browsers scale `<area>` coordinates automatically to match however
+large the image actually renders, so hotspots stay aligned at any display
+width without any extra positioning logic.
+
+- **Export HTML** downloads a single self-contained `.html` file — just the
+  `<img>`/`<map>` markup, no `<html>`/`<body>` wrapper — with the flattened,
+  annotated image embedded directly, so it always shows correctly with no
+  second file to keep track of.
+- **Copy HTML** copies the same markup to the clipboard for pasting into
+  your own site's code. Since that's meant to drop into a page you already
+  control, it references the image by file name only (no embedded image
+  data) — make sure a file with that name is present wherever you host the
+  snippet, e.g. by using Export PNG first.
+
+Each style preset has its own **Hotspot margin** (0–24px, in the Styles
+panel), which pads that style's hotspot radius beyond its visible badge,
+since the exact badge circle can be a small target to click precisely.
+**Map name** (in the toolbar's export group) sets the exported HTML file's
+name and its accessible label; it defaults to the uploaded image's file name
+but can be changed independently of the PNG/project file name.
+
 ## Notes on persistence
 
 Style presets and your export-size preference are saved in the browser via
@@ -72,8 +121,23 @@ to download a `.json` file you can reopen later with **Open project**.
   uploaded image.
 - Optional legend/caption export alongside the flattened PNG.
 - Text annotations
-- Add image map locations with html export for URLs
 - Additional annotation flag shapes (square, rounded square, etc).
+
+## Ideas to explore (not roadmapped)
+
+- Responsive image + overlay sizing: the editor currently sizes the `<img>`
+  with explicit pixel dimensions (`naturalWidth * zoom/100`) rather than
+  percentage/CSS-driven sizing. Since the SVG overlay already tracks the
+  image's rendered size via a `ResizeObserver` (`CalloutAnnotator.jsx`), a
+  percentage-width container should scale image + overlay together with a
+  fairly small change — worth prototyping.
+- SVG export alongside PNG: the app already builds full SVG markup
+  internally for annotations (`buildExportSVGMarkup` in
+  `CalloutAnnotator.jsx`) before flattening it onto canvas for PNG export.
+  Exposing that SVG directly as an export option would give crisp,
+  infinitely-scalable annotations (though the underlying photo stays raster)
+  — useful for print/vector-editing workflows, worth exploring separately
+  from PNG/HTML export.
 
 ## Author
 

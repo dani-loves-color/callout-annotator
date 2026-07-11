@@ -20,6 +20,9 @@ import {
   GripVertical,
   Settings2,
   X,
+  Copy,
+  Link2,
+  ExternalLink,
 } from 'lucide-react';
 
 const DEFAULT_STYLES = [
@@ -36,6 +39,7 @@ const DEFAULT_STYLES = [
     fontSize: 16,
     fontWeight: 700,
     capSize: 8,
+    hotspotMarginPx: 8,
   }, // blue-600
   {
     id: 's-2',
@@ -50,6 +54,7 @@ const DEFAULT_STYLES = [
     fontSize: 16,
     fontWeight: 700,
     capSize: 8,
+    hotspotMarginPx: 8,
   }, // amber-400
   {
     id: 's-3',
@@ -64,6 +69,7 @@ const DEFAULT_STYLES = [
     fontSize: 16,
     fontWeight: 700,
     capSize: 8,
+    hotspotMarginPx: 8,
   }, // red-500
   {
     id: 's-4',
@@ -78,6 +84,7 @@ const DEFAULT_STYLES = [
     fontSize: 16,
     fontWeight: 700,
     capSize: 12,
+    hotspotMarginPx: 8,
   }, // gray-600
   {
     id: 's-5',
@@ -92,6 +99,7 @@ const DEFAULT_STYLES = [
     fontSize: 16,
     fontWeight: 700,
     capSize: 12,
+    hotspotMarginPx: 8,
   }, // gray-600
 ];
 
@@ -119,6 +127,7 @@ const STYLE_FIELD_DEFAULTS = {
   fontSize: 16,
   fontWeight: 700,
   capSize: 8,
+  hotspotMarginPx: 8,
 };
 function normalizeStyle(s) {
   return { ...STYLE_FIELD_DEFAULTS, ...s };
@@ -565,6 +574,117 @@ function buildExportSVGMarkup(callouts, styles, width, height, scale) {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><defs>${defs}</defs>${body}</svg>`;
 }
 
+// Draws the base image plus the annotation overlay onto a canvas at the
+// chosen export resolution and resolves with the flattened PNG data URL.
+// Shared by the PNG export and both HTML/image-map exports so all three
+// always agree on what "the export" looks like.
+function flattenAnnotatedPNG(image, callouts, styles, exportMode, exportMaxDim) {
+  const { exportWidth, exportHeight, exportScale } = computeExportDims(
+    image,
+    exportMode,
+    exportMaxDim
+  );
+  return new Promise((resolve) => {
+    const canvas = document.createElement('canvas');
+    canvas.width = exportWidth;
+    canvas.height = exportHeight;
+    const ctx = canvas.getContext('2d');
+    const baseImg = new Image();
+    baseImg.onload = () => {
+      ctx.drawImage(baseImg, 0, 0, canvas.width, canvas.height);
+      const svgMarkup = buildExportSVGMarkup(
+        callouts,
+        styles,
+        canvas.width,
+        canvas.height,
+        exportScale
+      );
+      const svgBlob = new Blob([svgMarkup], {
+        type: 'image/svg+xml;charset=utf-8',
+      });
+      const url = URL.createObjectURL(svgBlob);
+      const overlayImg = new Image();
+      overlayImg.onload = () => {
+        ctx.drawImage(overlayImg, 0, 0, canvas.width, canvas.height);
+        URL.revokeObjectURL(url);
+        resolve({
+          dataUrl: canvas.toDataURL('image/png'),
+          exportWidth,
+          exportHeight,
+          exportScale,
+        });
+      };
+      overlayImg.src = url;
+    };
+    baseImg.src = image.src;
+  });
+}
+
+// Absolute URLs (with a scheme like http:, https:, mailto:) pass through
+// unchanged. A bare domain/path like "www.example.com" is treated as
+// relative by the browser (resolving against whatever page it's viewed on)
+// unless a scheme is added, so this defaults it to https.
+function normalizeUrl(url) {
+  const trimmed = (url || '').trim();
+  if (!trimmed) return '';
+  if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) return trimmed;
+  return `https://${trimmed}`;
+}
+
+function slugify(name) {
+  return (
+    (name || '')
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '') || 'image-map'
+  );
+}
+
+// Builds the "image map" export markup per the W3C WAI image-map pattern
+// (https://www.w3.org/WAI/tutorials/images/imagemap/): a plain <img> plus a
+// native <map>/<area> — real accessible link semantics, no absolute-position
+// hacks. Browsers scale <area> coords automatically to match however large
+// the <img> actually renders, so this stays correct at any display width.
+// `imageSrc` is either a data URI (self-contained download) or a bare file
+// name (lightweight paste target) — the caller decides which.
+function buildImageMapHTML({
+  imageSrc,
+  exportWidth,
+  exportHeight,
+  callouts,
+  styles,
+  exportScale,
+  mapName,
+}) {
+  const styleMap = Object.fromEntries(styles.map((s) => [s.id, s]));
+  const escapeAttr = (s) =>
+    String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  const mapId = `map-${slugify(mapName)}`;
+
+  const areas = callouts
+    .map((c) => {
+      const url = (c.url || '').trim();
+      if (!url) return '';
+      const st = styleMap[c.styleId] || styles[0];
+      const label = c.text?.trim() || `Callout ${c.number}`;
+      const hoverTitle = c.linkTitle?.trim() || label;
+      const cx = Math.round(c.bx * exportWidth);
+      const cy = Math.round(c.by * exportHeight);
+      const r = Math.round(
+        st.badgeRadius * exportScale + (st.hotspotMarginPx ?? 8)
+      );
+      return `  <area shape="circle" coords="${cx},${cy},${r}" href="${escapeAttr(normalizeUrl(url))}" alt="${escapeAttr(label)}" title="${escapeAttr(hoverTitle)}" target="_blank" rel="noopener noreferrer" />`;
+    })
+    .join('\n');
+
+  const altText = escapeAttr(mapName || 'Annotated diagram');
+  return `<img src="${escapeAttr(imageSrc)}" alt="${altText}" usemap="#${mapId}" width="${exportWidth}" height="${exportHeight}" style="max-width:100%;height:auto;" />
+<map name="${mapId}">
+${areas}
+</map>`;
+}
+
 export default function CalloutAnnotator() {
   const [image, setImage] = useState(null); // {src, naturalWidth, naturalHeight}
   const [callouts, setCallouts] = useState([]); // {id, anchors:[{id,ax,ay}], bx, by, text, styleId}
@@ -577,6 +697,8 @@ export default function CalloutAnnotator() {
   const [exportMode, setExportMode] = useState('max'); // 'max' | 'full'
   const [exportMaxDim, setExportMaxDim] = useState(800);
   const [fileBaseName, setFileBaseName] = useState('');
+  const [mapName, setMapName] = useState('');
+  const [copyStatus, setCopyStatus] = useState(null);
   const [dragState, setDragState] = useState(null); // {calloutId, anchorId?, target: 'a'|'b'}
   const [dragRowIndex, setDragRowIndex] = useState(null);
   const [selectedId, setSelectedId] = useState(null);
@@ -603,6 +725,7 @@ export default function CalloutAnnotator() {
           if (parsed2.exportMode) setExportMode(parsed2.exportMode);
           if (parsed2.exportMaxDim) setExportMaxDim(parsed2.exportMaxDim);
           if (parsed2.fileBaseName) setFileBaseName(parsed2.fileBaseName);
+          if (parsed2.mapName) setMapName(parsed2.mapName);
         }
       } catch (e) {}
       storageLoaded.current = true;
@@ -621,11 +744,16 @@ export default function CalloutAnnotator() {
     window.storage
       .set(
         'callout-export-settings',
-        JSON.stringify({ exportMode, exportMaxDim, fileBaseName }),
+        JSON.stringify({
+          exportMode,
+          exportMaxDim,
+          fileBaseName,
+          mapName,
+        }),
         false
       )
       .catch(() => {});
-  }, [exportMode, exportMaxDim, fileBaseName]);
+  }, [exportMode, exportMaxDim, fileBaseName, mapName]);
 
   // track displayed image size — ResizeObserver catches layout shifts (like the style panel
   // opening/closing) in addition to actual window resizes.
@@ -672,11 +800,9 @@ export default function CalloutAnnotator() {
         });
         setCallouts([]);
         setZoom(100);
-        setFileBaseName((prev) => {
-          if (prev) return prev; // don't clobber a name the user already chose
-          const stripped = file.name.replace(/\.[^./\\]+$/, '');
-          return sanitizeFileName(stripped);
-        });
+        const stripped = sanitizeFileName(file.name.replace(/\.[^./\\]+$/, ''));
+        setFileBaseName((prev) => prev || stripped); // don't clobber a name the user already chose
+        setMapName((prev) => prev || stripped);
       };
       img.src = reader.result;
     };
@@ -697,6 +823,8 @@ export default function CalloutAnnotator() {
       bx,
       by,
       text: '',
+      url: '',
+      linkTitle: '',
       styleId: activeStyleId,
     };
     setCallouts((prev) => [...prev, newCallout]);
@@ -740,6 +868,14 @@ export default function CalloutAnnotator() {
 
   function updateCalloutText(id, text) {
     setCallouts((prev) => prev.map((c) => (c.id === id ? { ...c, text } : c)));
+  }
+  function updateCalloutUrl(id, url) {
+    setCallouts((prev) => prev.map((c) => (c.id === id ? { ...c, url } : c)));
+  }
+  function updateCalloutLinkTitle(id, linkTitle) {
+    setCallouts((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, linkTitle } : c))
+    );
   }
   function updateCalloutStyle(id, styleId) {
     setCallouts((prev) =>
@@ -803,45 +939,79 @@ export default function CalloutAnnotator() {
     if (activeStyleId === styleId) setActiveStyleId(remaining[0].id);
   }
 
-  function exportPNG() {
+  async function exportPNG() {
+    if (!image) return;
+    const { dataUrl, exportWidth, exportHeight } = await flattenAnnotatedPNG(
+      image,
+      orderedCallouts,
+      styles,
+      exportMode,
+      exportMaxDim
+    );
+    const base = sanitizeFileName(fileBaseName) || 'annotated-image';
+    const link = document.createElement('a');
+    link.download = `${base}-${exportWidth}x${exportHeight}.png`;
+    link.href = dataUrl;
+    link.click();
+  }
+
+  // Export HTML downloads one self-contained file — the flattened annotated
+  // image embedded directly (data URI) — so it always shows the correct
+  // annotations and never depends on a second, separately-downloaded file
+  // actually landing next to it with a matching name.
+  async function exportHTML() {
+    if (!image) return;
+    const { dataUrl, exportWidth, exportHeight, exportScale } =
+      await flattenAnnotatedPNG(
+        image,
+        orderedCallouts,
+        styles,
+        exportMode,
+        exportMaxDim
+      );
+    const fragment = buildImageMapHTML({
+      imageSrc: dataUrl,
+      exportWidth,
+      exportHeight,
+      exportScale,
+      callouts: orderedCallouts,
+      styles,
+      mapName,
+    });
+    const base = sanitizeFileName(mapName) || 'image-map';
+    const blob = new Blob([fragment], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.download = `${base}.html`;
+    link.href = url;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
+  // Copy HTML is meant to be pasted into a site you already control, so it
+  // references the image by file name instead — no flattening needed, just
+  // the export dimensions/scale, and you supply the matching PNG yourself
+  // (e.g. via Export PNG).
+  function copyHTML() {
     if (!image) return;
     const { exportWidth, exportHeight, exportScale } = computeExportDims(
       image,
       exportMode,
       exportMaxDim
     );
-
-    const canvas = document.createElement('canvas');
-    canvas.width = exportWidth;
-    canvas.height = exportHeight;
-    const ctx = canvas.getContext('2d');
-    const baseImg = new Image();
-    baseImg.onload = () => {
-      ctx.drawImage(baseImg, 0, 0, canvas.width, canvas.height);
-      const svgMarkup = buildExportSVGMarkup(
-        orderedCallouts,
-        styles,
-        canvas.width,
-        canvas.height,
-        exportScale
-      );
-      const svgBlob = new Blob([svgMarkup], {
-        type: 'image/svg+xml;charset=utf-8',
-      });
-      const url = URL.createObjectURL(svgBlob);
-      const overlayImg = new Image();
-      overlayImg.onload = () => {
-        ctx.drawImage(overlayImg, 0, 0, canvas.width, canvas.height);
-        URL.revokeObjectURL(url);
-        const base = sanitizeFileName(fileBaseName) || 'annotated-image';
-        const link = document.createElement('a');
-        link.download = `${base}-${exportWidth}x${exportHeight}.png`;
-        link.href = canvas.toDataURL('image/png');
-        link.click();
-      };
-      overlayImg.src = url;
-    };
-    baseImg.src = image.src;
+    const base = sanitizeFileName(mapName) || 'image-map';
+    const fragment = buildImageMapHTML({
+      imageSrc: `${base}.png`,
+      exportWidth,
+      exportHeight,
+      exportScale,
+      callouts: orderedCallouts,
+      styles,
+      mapName,
+    });
+    navigator.clipboard.writeText(fragment);
+    setCopyStatus('copied');
+    setTimeout(() => setCopyStatus(null), 1500);
   }
 
   function exportProject() {
@@ -862,7 +1032,10 @@ export default function CalloutAnnotator() {
       try {
         const data = JSON.parse(reader.result);
         if (data.image) setImage(data.image);
-        if (data.callouts) setCallouts(data.callouts);
+        if (data.callouts)
+          setCallouts(
+            data.callouts.map((c) => ({ url: '', linkTitle: '', ...c }))
+          );
         if (data.styles) setStyles(data.styles.map(normalizeStyle));
         if (data.startNumber) setStartNumber(data.startNumber);
       } catch (e) {
@@ -903,8 +1076,16 @@ export default function CalloutAnnotator() {
           Callout Annotator
         </div>
 
-        <button onClick={() => imgFileRef.current.click()} style={btnStyle()}>
-          <Upload size={14} /> {image ? 'Replace image' : 'Upload image'}
+        {/* Image group */}
+        <button
+          onClick={() => imgFileRef.current.click()}
+          title={
+            image
+              ? 'Load a different image and clear all current callouts'
+              : undefined
+          }
+          style={btnStyle()}>
+          <Upload size={14} /> {image ? 'New image (clears callouts)' : 'Upload image'}
         </button>
         <input
           ref={imgFileRef}
@@ -914,6 +1095,9 @@ export default function CalloutAnnotator() {
           onChange={(e) => handleImageFile(e.target.files[0])}
         />
 
+        <div style={dividerStyle()} />
+
+        {/* Numbering & naming group */}
         <label
           style={{
             display: 'flex',
@@ -965,8 +1149,9 @@ export default function CalloutAnnotator() {
           />
         </label>
 
-        <div style={{ flex: 1 }} />
+        <div style={dividerStyle()} />
 
+        {/* Panels & project I/O group */}
         <button
           onClick={() => setShowStyleManager((v) => !v)}
           style={btnStyle(showStyleManager)}>
@@ -988,6 +1173,9 @@ export default function CalloutAnnotator() {
           onChange={(e) => e.target.files[0] && loadProject(e.target.files[0])}
         />
 
+        <div style={dividerStyle()} />
+
+        {/* Export group */}
         <label
           style={{
             display: 'flex',
@@ -1032,12 +1220,50 @@ export default function CalloutAnnotator() {
             />
           )}
         </label>
-
         <button
           onClick={exportPNG}
           disabled={!image}
           style={btnStyle(false, !image)}>
           <Download size={14} /> Export PNG
+        </button>
+
+        <label
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            fontSize: 12.5,
+            color: '#9BA0AA',
+          }}>
+          Map name
+          <input
+            type='text'
+            value={mapName}
+            onChange={(e) => setMapName(e.target.value)}
+            placeholder='image-map'
+            style={{
+              width: 130,
+              background: '#1E2127',
+              border: '1px solid #33363E',
+              borderRadius: 6,
+              color: '#E7E8EA',
+              padding: '4px 6px',
+            }}
+          />
+        </label>
+        <button
+          onClick={exportHTML}
+          disabled={!image}
+          title='Download a standalone HTML file: the flattened image plus clickable hotspots for any callout with a link'
+          style={btnStyle(false, !image)}>
+          <Download size={14} /> Export HTML
+        </button>
+        <button
+          onClick={copyHTML}
+          disabled={!image}
+          title='Copy the same HTML fragment to the clipboard (references the image by file name — pair with Export PNG), ready to paste into your own site'
+          style={btnStyle(false, !image)}>
+          <Copy size={14} /> {copyStatus === 'copied' ? 'Copied!' : 'Copy HTML'}
         </button>
       </div>
 
@@ -1438,6 +1664,83 @@ export default function CalloutAnnotator() {
                         <Minus size={11} />
                       </button>
                     </div>
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 4,
+                        marginTop: 6,
+                      }}
+                      onClick={(e) => e.stopPropagation()}>
+                      <Link2
+                        size={11}
+                        style={{ color: '#585C66', flexShrink: 0 }}
+                      />
+                      <input
+                        value={c.url || ''}
+                        onChange={(e) =>
+                          updateCalloutUrl(c.id, e.target.value)
+                        }
+                        placeholder='Link URL (optional)'
+                        style={{
+                          flex: 1,
+                          minWidth: 0,
+                          background: '#1E2127',
+                          border: '1px solid #33363E',
+                          borderRadius: 5,
+                          color: '#E7E8EA',
+                          fontSize: 11,
+                          padding: '2px 4px',
+                        }}
+                      />
+                      <button
+                        onClick={() =>
+                          window.open(
+                            normalizeUrl(c.url),
+                            '_blank',
+                            'noopener,noreferrer'
+                          )
+                        }
+                        disabled={!c.url?.trim()}
+                        title='Open this link in a new tab to sanity-check it'
+                        style={iconBtnStyle(!c.url?.trim())}>
+                        <ExternalLink size={11} />
+                      </button>
+                    </div>
+                    {c.url?.trim() && (
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 4,
+                          marginTop: 4,
+                        }}
+                        onClick={(e) => e.stopPropagation()}>
+                        <span
+                          style={{
+                            width: 11,
+                            flexShrink: 0,
+                          }}
+                        />
+                        <input
+                          value={c.linkTitle || ''}
+                          onChange={(e) =>
+                            updateCalloutLinkTitle(c.id, e.target.value)
+                          }
+                          placeholder='Link title (shown on hover)'
+                          style={{
+                            flex: 1,
+                            minWidth: 0,
+                            background: '#1E2127',
+                            border: '1px solid #33363E',
+                            borderRadius: 5,
+                            color: '#E7E8EA',
+                            fontSize: 11,
+                            padding: '2px 4px',
+                          }}
+                        />
+                      </div>
+                    )}
                   </div>
                   <button
                     onClick={(e) => {
@@ -1639,6 +1942,27 @@ export default function CalloutAnnotator() {
                       style={inputStyle()}
                     />
                   </label>
+                  <label
+                    title='Extra invisible padding, in exported pixels, added around this style&#39;s badge so its hotspot is easier to click'>
+                    Hotspot margin (px)
+                    <input
+                      type='number'
+                      min='0'
+                      max='24'
+                      value={s.hotspotMarginPx ?? 8}
+                      onChange={(e) =>
+                        updateStyleField(
+                          s.id,
+                          'hotspotMarginPx',
+                          Math.max(
+                            0,
+                            Math.min(24, parseInt(e.target.value, 10) || 0)
+                          )
+                        )
+                      }
+                      style={inputStyle()}
+                    />
+                  </label>
                   <label style={{ gridColumn: 'span 2' }}>
                     Font
                     <select
@@ -1673,6 +1997,14 @@ export default function CalloutAnnotator() {
   );
 }
 
+function dividerStyle() {
+  return {
+    width: 1,
+    alignSelf: 'stretch',
+    background: '#2A2D34',
+    margin: '0 2px',
+  };
+}
 function zoomBtnStyle() {
   return {
     width: 20,
