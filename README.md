@@ -71,6 +71,9 @@ to download a `.json` file you can reopen later with **Open project**.
   rendering a page to canvas and feeding it into the same pipeline as an
   uploaded image.
 - Optional legend/caption export alongside the flattened PNG.
+- Text annotations
+- Add image map loctions with html export for URLs
+- Additional annotation flag shapes (square, rounded square, etc).
 
 ## Author
 
