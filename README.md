@@ -1,7 +1,7 @@
 # Callout Annotator
 
 A small browser tool for adding numbered callouts to PNG/JPG images — built
-for annotating equipment photos and drawings in training content and user
+for annotating photos and drawings in technical content like training guides and user
 manuals. Numbers renumber automatically as you reorder the list; no manual
 relabeling.
 
@@ -67,12 +67,12 @@ to download a `.json` file you can reopen later with **Open project**.
 
 ## Roadmap ideas
 
-- PDF import (via `pdf.js`) so CAD-drawing PDFs can be annotated directly,
+- PDF import (via `pdf.js`) so PDFs can be annotated directly,
   rendering a page to canvas and feeding it into the same pipeline as an
   uploaded image.
 - Optional legend/caption export alongside the flattened PNG.
 - Text annotations
-- Add image map loctions with html export for URLs
+- Add image map locations with html export for URLs
 - Additional annotation flag shapes (square, rounded square, etc).
 
 ## Author
