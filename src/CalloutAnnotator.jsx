@@ -105,15 +105,15 @@ const FONT_OPTIONS = [
 const CAP_OPTIONS = ['arrow', 'dot', 'square', 'heart', 'flower', 'none'];
 const uid = () => Math.random().toString(36).slice(2, 10);
 
-// Fallback values for any field a saved/loaded style might be missing —
-// keeps old localStorage data or hand-edited style objects from ever
-// producing an undefined value in a controlled input.
+// Fallback values for any field a saved/loaded style might be missing — keeps
+// old localStorage data, opened project files, or hand-duplicated style
+// objects from ever producing an undefined value in a controlled input.
 const STYLE_FIELD_DEFAULTS = {
   stroke: '#2563eb',
   strokeWidth: 2,
   cap: 'arrow',
-  badgeFill: '#ffffff',
-  badgeText: '#000000',
+  badgeFill: '#2563eb',
+  badgeText: '#FFFFFF',
   badgeRadius: 18,
   font: 'Inter, system-ui, sans-serif',
   fontSize: 16,
@@ -122,6 +122,32 @@ const STYLE_FIELD_DEFAULTS = {
 };
 function normalizeStyle(s) {
   return { ...STYLE_FIELD_DEFAULTS, ...s };
+}
+
+// Given the loaded image and the current export settings, compute the pixel
+// dimensions the exported PNG will actually have, plus the scale factor
+// (relative to the source image) that badge/line/font sizes get multiplied
+// by. Shared between the real export and the "preview export size" toggle,
+// so both always agree.
+function computeExportDims(image, exportMode, exportMaxDim) {
+  const { naturalWidth: nw, naturalHeight: nh } = image;
+  let exportWidth = nw,
+    exportHeight = nh;
+  if (exportMode === 'max') {
+    const dim = Math.max(1, exportMaxDim);
+    if (nw >= nh) {
+      exportWidth = Math.min(nw, dim);
+      exportHeight = Math.round((exportWidth / nw) * nh);
+    } else {
+      exportHeight = Math.min(nh, dim);
+      exportWidth = Math.round((exportHeight / nh) * nw);
+    }
+  }
+  return { exportWidth, exportHeight, exportScale: exportWidth / nw };
+}
+
+function sanitizeFileName(name) {
+  return (name || '').trim().replace(/[\\/:*?"<>|]/g, '-');
 }
 
 // Tailwind CSS default color palette (v3), shades used in the swatch picker
@@ -550,6 +576,7 @@ export default function CalloutAnnotator() {
   const [zoom, setZoom] = useState(100);
   const [exportMode, setExportMode] = useState('max'); // 'max' | 'full'
   const [exportMaxDim, setExportMaxDim] = useState(800);
+  const [fileBaseName, setFileBaseName] = useState('');
   const [dragState, setDragState] = useState(null); // {calloutId, anchorId?, target: 'a'|'b'}
   const [dragRowIndex, setDragRowIndex] = useState(null);
   const [selectedId, setSelectedId] = useState(null);
@@ -575,6 +602,7 @@ export default function CalloutAnnotator() {
           const parsed2 = JSON.parse(res2.value);
           if (parsed2.exportMode) setExportMode(parsed2.exportMode);
           if (parsed2.exportMaxDim) setExportMaxDim(parsed2.exportMaxDim);
+          if (parsed2.fileBaseName) setFileBaseName(parsed2.fileBaseName);
         }
       } catch (e) {}
       storageLoaded.current = true;
@@ -593,11 +621,11 @@ export default function CalloutAnnotator() {
     window.storage
       .set(
         'callout-export-settings',
-        JSON.stringify({ exportMode, exportMaxDim }),
+        JSON.stringify({ exportMode, exportMaxDim, fileBaseName }),
         false
       )
       .catch(() => {});
-  }, [exportMode, exportMaxDim]);
+  }, [exportMode, exportMaxDim, fileBaseName]);
 
   // track displayed image size — ResizeObserver catches layout shifts (like the style panel
   // opening/closing) in addition to actual window resizes.
@@ -623,6 +651,14 @@ export default function CalloutAnnotator() {
     number: startNumber + i,
   }));
 
+  // Scale factor applied to badge/line/font sizes in the live, on-screen
+  // view. Style values are defined in natural-image pixels, so multiplying
+  // by the zoom ratio is what keeps a badge the same size *relative to the
+  // image* no matter how far you zoom in or out. Export settings (max
+  // dimension, etc.) intentionally don't affect this — annotations always
+  // look the same in the editor regardless of what export size is chosen.
+  const previewSizeScale = zoom / 100;
+
   function handleImageFile(file) {
     if (!file) return;
     const reader = new FileReader();
@@ -636,6 +672,11 @@ export default function CalloutAnnotator() {
         });
         setCallouts([]);
         setZoom(100);
+        setFileBaseName((prev) => {
+          if (prev) return prev; // don't clobber a name the user already chose
+          const stripped = file.name.replace(/\.[^./\\]+$/, '');
+          return sanitizeFileName(stripped);
+        });
       };
       img.src = reader.result;
     };
@@ -764,20 +805,11 @@ export default function CalloutAnnotator() {
 
   function exportPNG() {
     if (!image) return;
-    const { naturalWidth: nw, naturalHeight: nh } = image;
-    let exportWidth = nw,
-      exportHeight = nh;
-    if (exportMode === 'max') {
-      const dim = Math.max(1, exportMaxDim);
-      if (nw >= nh) {
-        exportWidth = Math.min(nw, dim);
-        exportHeight = Math.round((exportWidth / nw) * nh);
-      } else {
-        exportHeight = Math.min(nh, dim);
-        exportWidth = Math.round((exportHeight / nh) * nw);
-      }
-    }
-    const exportScale = exportWidth / nw; // proportional to the image, independent of on-screen zoom
+    const { exportWidth, exportHeight, exportScale } = computeExportDims(
+      image,
+      exportMode,
+      exportMaxDim
+    );
 
     const canvas = document.createElement('canvas');
     canvas.width = exportWidth;
@@ -801,8 +833,9 @@ export default function CalloutAnnotator() {
       overlayImg.onload = () => {
         ctx.drawImage(overlayImg, 0, 0, canvas.width, canvas.height);
         URL.revokeObjectURL(url);
+        const base = sanitizeFileName(fileBaseName) || 'annotated-image';
         const link = document.createElement('a');
-        link.download = `annotated-image-${exportWidth}x${exportHeight}.png`;
+        link.download = `${base}-${exportWidth}x${exportHeight}.png`;
         link.href = canvas.toDataURL('image/png');
         link.click();
       };
@@ -815,8 +848,9 @@ export default function CalloutAnnotator() {
     const data = { image, callouts, styles, startNumber };
     const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
+    const base = sanitizeFileName(fileBaseName) || 'callout-project';
     const link = document.createElement('a');
-    link.download = 'callout-project.json';
+    link.download = `${base}.json`;
     link.href = url;
     link.click();
     URL.revokeObjectURL(url);
@@ -906,6 +940,31 @@ export default function CalloutAnnotator() {
           />
         </label>
 
+        <label
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            fontSize: 12.5,
+            color: '#9BA0AA',
+          }}>
+          File name
+          <input
+            type='text'
+            value={fileBaseName}
+            onChange={(e) => setFileBaseName(e.target.value)}
+            placeholder='annotated-image'
+            style={{
+              width: 150,
+              background: '#1E2127',
+              border: '1px solid #33363E',
+              borderRadius: 6,
+              color: '#E7E8EA',
+              padding: '4px 6px',
+            }}
+          />
+        </label>
+
         <div style={{ flex: 1 }} />
 
         <button
@@ -986,6 +1045,7 @@ export default function CalloutAnnotator() {
         <div
           style={{
             flex: 1,
+            minWidth: 0,
             padding: 20,
             display: 'flex',
             flexDirection: 'column',
@@ -1012,6 +1072,7 @@ export default function CalloutAnnotator() {
                   marginBottom: 10,
                   fontSize: 11.5,
                   color: '#9BA0AA',
+                  flexWrap: 'wrap',
                 }}>
                 <span style={{ fontFamily: "'IBM Plex Mono', monospace" }}>
                   {image.naturalWidth}×{image.naturalHeight}px ·{' '}
@@ -1130,7 +1191,9 @@ export default function CalloutAnnotator() {
                                   x2={bx}
                                   y2={by}
                                   stroke={st.stroke}
-                                  strokeWidth={st.strokeWidth}
+                                  strokeWidth={
+                                    st.strokeWidth * previewSizeScale
+                                  }
                                   markerStart={
                                     st.cap !== 'none'
                                       ? `url(#cap-${st.id})`
@@ -1162,10 +1225,10 @@ export default function CalloutAnnotator() {
                             data-draggable
                             cx={bx}
                             cy={by}
-                            r={st.badgeRadius}
+                            r={st.badgeRadius * previewSizeScale}
                             fill={st.badgeFill}
                             stroke={st.stroke}
-                            strokeWidth={2}
+                            strokeWidth={2 * previewSizeScale}
                             style={{ cursor: 'grab' }}
                             onMouseDown={(e) => {
                               e.stopPropagation();
@@ -1181,7 +1244,7 @@ export default function CalloutAnnotator() {
                             y={by}
                             fill={st.badgeText}
                             fontFamily={st.font}
-                            fontSize={st.fontSize}
+                            fontSize={st.fontSize * previewSizeScale}
                             fontWeight={st.fontWeight}
                             textAnchor='middle'
                             dominantBaseline='central'
@@ -1204,6 +1267,7 @@ export default function CalloutAnnotator() {
         <div
           style={{
             width: 320,
+            flexShrink: 0,
             borderLeft: '1px solid #2A2D34',
             background: '#17191E',
             display: 'flex',
@@ -1399,6 +1463,7 @@ export default function CalloutAnnotator() {
           <div
             style={{
               width: 300,
+              flexShrink: 0,
               borderLeft: '1px solid #2A2D34',
               background: '#17191E',
               padding: 14,
