@@ -72,9 +72,13 @@ to download a `.json` file you can reopen later with **Open project**.
   uploaded image.
 - Optional legend/caption export alongside the flattened PNG.
 
+## Author
+
+Danielle Hazen — [www.daniellehazen.com](https://www.daniellehazen.com)
+
 ## License
 
 [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/) —
 Attribution-NonCommercial. Anyone's free to use, share, and adapt this,
-with credit to Dani Hazen — no selling it or building a paid product/service
-on top of it without permission. See `LICENSE` for details.
+with credit to Danielle Hazen — no selling it or building a paid
+product/service on top of it without permission. See `LICENSE` for details.
