@@ -23,6 +23,8 @@ import {
   Copy,
   Link2,
   ExternalLink,
+  ChevronDown,
+  ChevronRight,
 } from 'lucide-react';
 
 const DEFAULT_STYLES = [
@@ -133,26 +135,40 @@ function normalizeStyle(s) {
   return { ...STYLE_FIELD_DEFAULTS, ...s };
 }
 
-// Given the loaded image and the current export settings, compute the pixel
-// dimensions the exported PNG will actually have, plus the scale factor
-// (relative to the source image) that badge/line/font sizes get multiplied
-// by. Shared between the real export and the "preview export size" toggle,
-// so both always agree.
-function computeExportDims(image, exportMode, exportMaxDim) {
-  const { naturalWidth: nw, naturalHeight: nh } = image;
-  let exportWidth = nw,
-    exportHeight = nh;
+// Given the full canvas size (the image plus any margin added around it)
+// and the current export settings, compute the pixel dimensions the
+// exported PNG will actually have, plus the scale factor (relative to the
+// live canvas) that badge/line/font sizes get multiplied by. Shared between
+// the real export and the "preview export size" toggle, so both always agree.
+function computeExportDims(
+  canvasWidth,
+  canvasHeight,
+  exportMode,
+  exportMaxDim
+) {
+  let exportWidth = canvasWidth,
+    exportHeight = canvasHeight;
   if (exportMode === 'max') {
     const dim = Math.max(1, exportMaxDim);
-    if (nw >= nh) {
-      exportWidth = Math.min(nw, dim);
-      exportHeight = Math.round((exportWidth / nw) * nh);
+    if (canvasWidth >= canvasHeight) {
+      exportWidth = Math.min(canvasWidth, dim);
+      exportHeight = Math.round((exportWidth / canvasWidth) * canvasHeight);
     } else {
-      exportHeight = Math.min(nh, dim);
-      exportWidth = Math.round((exportHeight / nh) * nw);
+      exportHeight = Math.min(canvasHeight, dim);
+      exportWidth = Math.round((exportHeight / canvasHeight) * canvasWidth);
     }
   }
-  return { exportWidth, exportHeight, exportScale: exportWidth / nw };
+  return { exportWidth, exportHeight, exportScale: exportWidth / canvasWidth };
+}
+
+// Margin values default to 0 on every side so callers that don't know about
+// canvas margins (or old saved projects) get back the plain image size.
+const NO_MARGIN = { top: 0, right: 0, bottom: 0, left: 0 };
+function canvasDims(image, canvasMargin = NO_MARGIN) {
+  return {
+    canvasWidth: image.naturalWidth + canvasMargin.left + canvasMargin.right,
+    canvasHeight: image.naturalHeight + canvasMargin.top + canvasMargin.bottom,
+  };
 }
 
 function sanitizeFileName(name) {
@@ -574,13 +590,24 @@ function buildExportSVGMarkup(callouts, styles, width, height, scale) {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><defs>${defs}</defs>${body}</svg>`;
 }
 
-// Draws the base image plus the annotation overlay onto a canvas at the
-// chosen export resolution and resolves with the flattened PNG data URL.
-// Shared by the PNG export and both HTML/image-map exports so all three
-// always agree on what "the export" looks like.
-function flattenAnnotatedPNG(image, callouts, styles, exportMode, exportMaxDim) {
+// Draws the margin background, the base image (inset by the margin), and
+// the annotation overlay onto a canvas at the chosen export resolution, and
+// resolves with the flattened PNG data URL. Shared by the PNG export and
+// both HTML/image-map exports so all three always agree on what "the
+// export" looks like.
+function flattenAnnotatedPNG(
+  image,
+  callouts,
+  styles,
+  exportMode,
+  exportMaxDim,
+  canvasMargin = NO_MARGIN,
+  marginColor = '#ffffff'
+) {
+  const { canvasWidth, canvasHeight } = canvasDims(image, canvasMargin);
   const { exportWidth, exportHeight, exportScale } = computeExportDims(
-    image,
+    canvasWidth,
+    canvasHeight,
     exportMode,
     exportMaxDim
   );
@@ -589,9 +616,17 @@ function flattenAnnotatedPNG(image, callouts, styles, exportMode, exportMaxDim) 
     canvas.width = exportWidth;
     canvas.height = exportHeight;
     const ctx = canvas.getContext('2d');
+    ctx.fillStyle = marginColor;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
     const baseImg = new Image();
     baseImg.onload = () => {
-      ctx.drawImage(baseImg, 0, 0, canvas.width, canvas.height);
+      ctx.drawImage(
+        baseImg,
+        canvasMargin.left * exportScale,
+        canvasMargin.top * exportScale,
+        image.naturalWidth * exportScale,
+        image.naturalHeight * exportScale
+      );
       const svgMarkup = buildExportSVGMarkup(
         callouts,
         styles,
@@ -659,7 +694,10 @@ function buildImageMapHTML({
 }) {
   const styleMap = Object.fromEntries(styles.map((s) => [s.id, s]));
   const escapeAttr = (s) =>
-    String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+    String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/</g, '&lt;');
   const mapId = `map-${slugify(mapName)}`;
 
   const areas = callouts
@@ -692,12 +730,15 @@ export default function CalloutAnnotator() {
   const [startNumber, setStartNumber] = useState(1);
   const [activeStyleId, setActiveStyleId] = useState(DEFAULT_STYLES[0].id);
   const [showStyleManager, setShowStyleManager] = useState(false);
+  const [expandedStyleId, setExpandedStyleId] = useState(null); // which style card is expanded in the Styles panel — accordion, one at a time
   const [displaySize, setDisplaySize] = useState({ w: 0, h: 0 });
   const [zoom, setZoom] = useState(100);
   const [exportMode, setExportMode] = useState('max'); // 'max' | 'full'
   const [exportMaxDim, setExportMaxDim] = useState(800);
   const [fileBaseName, setFileBaseName] = useState('');
   const [mapName, setMapName] = useState('');
+  const [canvasMargin, setCanvasMargin] = useState(NO_MARGIN); // px added around the image so badges have room off the edges
+  const [marginColor, setMarginColor] = useState('#ffffff');
   const [copyStatus, setCopyStatus] = useState(null);
   const [dragState, setDragState] = useState(null); // {calloutId, anchorId?, target: 'a'|'b'}
   const [dragRowIndex, setDragRowIndex] = useState(null);
@@ -726,6 +767,9 @@ export default function CalloutAnnotator() {
           if (parsed2.exportMaxDim) setExportMaxDim(parsed2.exportMaxDim);
           if (parsed2.fileBaseName) setFileBaseName(parsed2.fileBaseName);
           if (parsed2.mapName) setMapName(parsed2.mapName);
+          if (parsed2.canvasMargin)
+            setCanvasMargin({ ...NO_MARGIN, ...parsed2.canvasMargin });
+          if (parsed2.marginColor) setMarginColor(parsed2.marginColor);
         }
       } catch (e) {}
       storageLoaded.current = true;
@@ -749,35 +793,64 @@ export default function CalloutAnnotator() {
           exportMaxDim,
           fileBaseName,
           mapName,
+          canvasMargin,
+          marginColor,
         }),
         false
       )
       .catch(() => {});
-  }, [exportMode, exportMaxDim, fileBaseName, mapName]);
+  }, [
+    exportMode,
+    exportMaxDim,
+    fileBaseName,
+    mapName,
+    canvasMargin,
+    marginColor,
+  ]);
 
-  // track displayed image size — ResizeObserver catches layout shifts (like the style panel
-  // opening/closing) in addition to actual window resizes.
+  // track displayed canvas size (image plus margin) — ResizeObserver catches
+  // layout shifts (like the style panel opening/closing) in addition to
+  // actual window resizes.
   useEffect(() => {
     if (!image || !wrapRef.current) return;
-    const imgEl = wrapRef.current.querySelector('img');
-    if (!imgEl) return;
+    const el = wrapRef.current;
     function measure() {
-      setDisplaySize({ w: imgEl.clientWidth, h: imgEl.clientHeight });
+      setDisplaySize({ w: el.clientWidth, h: el.clientHeight });
     }
     measure();
     const ro = new ResizeObserver(measure);
-    ro.observe(imgEl);
+    ro.observe(el);
     window.addEventListener('resize', measure);
     return () => {
       ro.disconnect();
       window.removeEventListener('resize', measure);
     };
-  }, [image, showStyleManager, zoom]);
+  }, [image, showStyleManager, zoom, canvasMargin]);
+
+  // Bring a newly expanded style card into view instead of leaving the user
+  // to scroll a long list to find it — matters most right after "New style"
+  // appends one at the bottom.
+  useEffect(() => {
+    if (!expandedStyleId) return;
+    document
+      .getElementById(`style-card-${expandedStyleId}`)
+      ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }, [expandedStyleId]);
 
   const orderedCallouts = callouts.map((c, i) => ({
     ...c,
     number: startNumber + i,
   }));
+
+  // The live canvas is the image plus whatever margin has been added around
+  // it — badge/anchor coordinates (bx/by/ax/ay) are fractions of this full
+  // canvas, not just the image, so badges can sit in the margin.
+  const canvasNaturalWidth = image
+    ? image.naturalWidth + canvasMargin.left + canvasMargin.right
+    : 0;
+  const canvasNaturalHeight = image
+    ? image.naturalHeight + canvasMargin.top + canvasMargin.bottom
+    : 0;
 
   // Scale factor applied to badge/line/font sizes in the live, on-screen
   // view. Style values are defined in natural-image pixels, so multiplying
@@ -801,8 +874,8 @@ export default function CalloutAnnotator() {
         setCallouts([]);
         setZoom(100);
         const stripped = sanitizeFileName(file.name.replace(/\.[^./\\]+$/, ''));
-        setFileBaseName((prev) => prev || stripped); // don't clobber a name the user already chose
-        setMapName((prev) => prev || stripped);
+        setFileBaseName(stripped);
+        setMapName(stripped);
       };
       img.src = reader.result;
     };
@@ -926,11 +999,13 @@ export default function CalloutAnnotator() {
       name: 'New Style',
     });
     setStyles((prev) => [...prev, ns]);
+    setExpandedStyleId(ns.id);
   }
   function deleteStyle(styleId) {
     if (styles.length <= 1) return;
     const remaining = styles.filter((s) => s.id !== styleId);
     setStyles(remaining);
+    if (expandedStyleId === styleId) setExpandedStyleId(null);
     setCallouts((prev) =>
       prev.map((c) =>
         c.styleId === styleId ? { ...c, styleId: remaining[0].id } : c
@@ -946,7 +1021,9 @@ export default function CalloutAnnotator() {
       orderedCallouts,
       styles,
       exportMode,
-      exportMaxDim
+      exportMaxDim,
+      canvasMargin,
+      marginColor
     );
     const base = sanitizeFileName(fileBaseName) || 'annotated-image';
     const link = document.createElement('a');
@@ -967,7 +1044,9 @@ export default function CalloutAnnotator() {
         orderedCallouts,
         styles,
         exportMode,
-        exportMaxDim
+        exportMaxDim,
+        canvasMargin,
+        marginColor
       );
     const fragment = buildImageMapHTML({
       imageSrc: dataUrl,
@@ -994,8 +1073,10 @@ export default function CalloutAnnotator() {
   // (e.g. via Export PNG).
   function copyHTML() {
     if (!image) return;
+    const { canvasWidth, canvasHeight } = canvasDims(image, canvasMargin);
     const { exportWidth, exportHeight, exportScale } = computeExportDims(
-      image,
+      canvasWidth,
+      canvasHeight,
       exportMode,
       exportMaxDim
     );
@@ -1015,7 +1096,14 @@ export default function CalloutAnnotator() {
   }
 
   function exportProject() {
-    const data = { image, callouts, styles, startNumber };
+    const data = {
+      image,
+      callouts,
+      styles,
+      startNumber,
+      canvasMargin,
+      marginColor,
+    };
     const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const base = sanitizeFileName(fileBaseName) || 'callout-project';
@@ -1038,6 +1126,9 @@ export default function CalloutAnnotator() {
           );
         if (data.styles) setStyles(data.styles.map(normalizeStyle));
         if (data.startNumber) setStartNumber(data.startNumber);
+        if (data.canvasMargin)
+          setCanvasMargin({ ...NO_MARGIN, ...data.canvasMargin });
+        if (data.marginColor) setMarginColor(data.marginColor);
       } catch (e) {
         alert("Couldn't read that project file.");
       }
@@ -1085,7 +1176,8 @@ export default function CalloutAnnotator() {
               : undefined
           }
           style={btnStyle()}>
-          <Upload size={14} /> {image ? 'New image (clears callouts)' : 'Upload image'}
+          <Upload size={14} />{' '}
+          {image ? 'New image (clears callouts)' : 'Upload image'}
         </button>
         <input
           ref={imgFileRef}
@@ -1094,6 +1186,57 @@ export default function CalloutAnnotator() {
           style={{ display: 'none' }}
           onChange={(e) => handleImageFile(e.target.files[0])}
         />
+
+        <div style={dividerStyle()} />
+
+        {/* Canvas margin group — extra space around the image so badges can
+            sit off the edges instead of crowding a tightly cropped image */}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            fontSize: 12.5,
+            color: '#9BA0AA',
+          }}>
+          Margin
+          {[
+            { key: 'top', label: 'T' },
+            { key: 'right', label: 'R' },
+            { key: 'bottom', label: 'B' },
+            { key: 'left', label: 'L' },
+          ].map(({ key, label }) => (
+            <label
+              key={key}
+              title={`${key} margin (px)`}
+              style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+              <span style={{ fontSize: 10, color: '#6B707A' }}>{label}</span>
+              <input
+                type='number'
+                min={0}
+                value={canvasMargin[key]}
+                onChange={(e) =>
+                  setCanvasMargin((m) => ({
+                    ...m,
+                    [key]: Math.max(0, parseInt(e.target.value || '0', 10)),
+                  }))
+                }
+                style={{
+                  width: 40,
+                  background: '#1E2127',
+                  border: '1px solid #33363E',
+                  borderRadius: 6,
+                  color: '#E7E8EA',
+                  padding: '4px 4px',
+                  fontSize: 11.5,
+                }}
+              />
+            </label>
+          ))}
+          <span title='Margin fill color' style={{ width: 90 }}>
+            <ColorSwatchPicker value={marginColor} onChange={setMarginColor} />
+          </span>
+        </div>
 
         <div style={dividerStyle()} />
 
@@ -1304,6 +1447,11 @@ export default function CalloutAnnotator() {
                   {image.naturalWidth}×{image.naturalHeight}px ·{' '}
                   {(image.naturalWidth / 96).toFixed(2)}"×
                   {(image.naturalHeight / 96).toFixed(2)}" @ 96 DPI
+                  {(canvasMargin.top ||
+                    canvasMargin.right ||
+                    canvasMargin.bottom ||
+                    canvasMargin.left) &&
+                    ` · canvas ${canvasNaturalWidth}×${canvasNaturalHeight}px`}
                 </span>
                 <div
                   style={{
@@ -1374,21 +1522,21 @@ export default function CalloutAnnotator() {
                     border: '1px solid #2A2D34',
                     boxShadow: '0 0 0 4px #0E0F12',
                     flexShrink: 0,
+                    width: (canvasNaturalWidth * zoom) / 100,
+                    height: (canvasNaturalHeight * zoom) / 100,
+                    background: marginColor,
                   }}>
                   <img
                     src={image.src}
                     alt=''
                     style={{
                       display: 'block',
+                      position: 'absolute',
+                      left: (canvasMargin.left * zoom) / 100,
+                      top: (canvasMargin.top * zoom) / 100,
                       width: (image.naturalWidth * zoom) / 100,
                       height: (image.naturalHeight * zoom) / 100,
                     }}
-                    onLoad={(e) =>
-                      setDisplaySize({
-                        w: e.target.clientWidth,
-                        h: e.target.clientHeight,
-                      })
-                    }
                   />
                   <svg
                     width={displaySize.w}
@@ -1678,9 +1826,7 @@ export default function CalloutAnnotator() {
                       />
                       <input
                         value={c.url || ''}
-                        onChange={(e) =>
-                          updateCalloutUrl(c.id, e.target.value)
-                        }
+                        onChange={(e) => updateCalloutUrl(c.id, e.target.value)}
                         placeholder='Link URL (optional)'
                         style={{
                           flex: 1,
@@ -1800,187 +1946,232 @@ export default function CalloutAnnotator() {
                 <X size={14} />
               </button>
             </div>
-            {styles.map((s) => (
-              <div
-                key={s.id}
-                style={{
-                  border: '1px solid #2A2D34',
-                  borderRadius: 8,
-                  padding: 10,
-                  marginBottom: 10,
-                }}>
-                <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
-                  <input
-                    value={s.name}
-                    onChange={(e) =>
-                      updateStyleField(s.id, 'name', e.target.value)
-                    }
-                    style={inputStyle()}
-                  />
-                  <button
-                    onClick={() => deleteStyle(s.id)}
-                    disabled={styles.length <= 1}
-                    style={{
-                      background: 'none',
-                      border: 'none',
-                      color: styles.length <= 1 ? '#3A3D44' : '#9BA0AA',
-                      cursor: styles.length <= 1 ? 'default' : 'pointer',
-                    }}>
-                    <Trash2 size={13} />
-                  </button>
-                </div>
+            {styles.map((s) => {
+              const isOpen = expandedStyleId === s.id;
+              return (
                 <div
+                  key={s.id}
+                  id={`style-card-${s.id}`}
                   style={{
-                    display: 'grid',
-                    gridTemplateColumns: '1fr 1fr',
-                    gap: 6,
-                    fontSize: 11,
-                    color: '#9BA0AA',
+                    border: '1px solid #2A2D34',
+                    borderRadius: 8,
+                    marginBottom: 8,
+                    overflow: 'hidden',
                   }}>
-                  <label>
-                    Line/badge outline
-                    <ColorSwatchPicker
-                      value={s.stroke}
-                      onChange={(v) => updateStyleField(s.id, 'stroke', v)}
+                  <div
+                    onClick={() => setExpandedStyleId(isOpen ? null : s.id)}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      padding: '8px 10px',
+                      cursor: 'pointer',
+                      background: isOpen ? '#1E2127' : 'transparent',
+                    }}>
+                    {isOpen ? (
+                      <ChevronDown
+                        size={13}
+                        style={{ color: '#6B707A', flexShrink: 0 }}
+                      />
+                    ) : (
+                      <ChevronRight
+                        size={13}
+                        style={{ color: '#6B707A', flexShrink: 0 }}
+                      />
+                    )}
+                    <span
+                      style={{
+                        width: 10,
+                        height: 10,
+                        borderRadius: 99,
+                        background: s.stroke,
+                        flexShrink: 0,
+                      }}
                     />
-                  </label>
-                  <label>
-                    Badge fill
-                    <ColorSwatchPicker
-                      value={s.badgeFill}
-                      onChange={(v) => updateStyleField(s.id, 'badgeFill', v)}
-                    />
-                  </label>
-                  <label>
-                    Badge text
-                    <ColorSwatchPicker
-                      value={s.badgeText}
-                      onChange={(v) => updateStyleField(s.id, 'badgeText', v)}
-                    />
-                  </label>
-                  <label>
-                    Line weight
                     <input
-                      type='number'
-                      min='1'
-                      max='8'
-                      step='0.5'
-                      value={s.strokeWidth}
+                      value={s.name}
+                      onClick={(e) => e.stopPropagation()}
                       onChange={(e) =>
-                        updateStyleField(
-                          s.id,
-                          'strokeWidth',
-                          parseFloat(e.target.value)
-                        )
+                        updateStyleField(s.id, 'name', e.target.value)
                       }
-                      style={inputStyle()}
+                      style={{ ...inputStyle(), flex: 1, minWidth: 0 }}
                     />
-                  </label>
-                  <label>
-                    Badge radius
-                    <input
-                      type='number'
-                      min='12'
-                      max='48'
-                      value={s.badgeRadius}
-                      onChange={(e) =>
-                        updateStyleField(
-                          s.id,
-                          'badgeRadius',
-                          parseInt(e.target.value, 10)
-                        )
-                      }
-                      style={inputStyle()}
-                    />
-                  </label>
-                  <label>
-                    Font size
-                    <input
-                      type='number'
-                      min='9'
-                      max='20'
-                      value={s.fontSize}
-                      onChange={(e) =>
-                        updateStyleField(
-                          s.id,
-                          'fontSize',
-                          parseInt(e.target.value, 10)
-                        )
-                      }
-                      style={inputStyle()}
-                    />
-                  </label>
-                  <label>
-                    Cap style
-                    <select
-                      value={s.cap}
-                      onChange={(e) =>
-                        updateStyleField(s.id, 'cap', e.target.value)
-                      }
-                      style={{ ...inputStyle(), width: '100%' }}>
-                      {CAP_OPTIONS.map((c) => (
-                        <option key={c} value={c}>
-                          {c}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    Cap Size
-                    <input
-                      type='number'
-                      min='8'
-                      max='20'
-                      value={s.capSize ?? 8}
-                      onChange={(e) =>
-                        updateStyleField(
-                          s.id,
-                          'capSize',
-                          parseInt(e.target.value, 10)
-                        )
-                      }
-                      style={inputStyle()}
-                    />
-                  </label>
-                  <label
-                    title='Extra invisible padding, in exported pixels, added around this style&#39;s badge so its hotspot is easier to click'>
-                    Hotspot margin (px)
-                    <input
-                      type='number'
-                      min='0'
-                      max='24'
-                      value={s.hotspotMarginPx ?? 8}
-                      onChange={(e) =>
-                        updateStyleField(
-                          s.id,
-                          'hotspotMarginPx',
-                          Math.max(
-                            0,
-                            Math.min(24, parseInt(e.target.value, 10) || 0)
-                          )
-                        )
-                      }
-                      style={inputStyle()}
-                    />
-                  </label>
-                  <label style={{ gridColumn: 'span 2' }}>
-                    Font
-                    <select
-                      value={s.font}
-                      onChange={(e) =>
-                        updateStyleField(s.id, 'font', e.target.value)
-                      }
-                      style={{ ...inputStyle(), width: '100%' }}>
-                      {FONT_OPTIONS.map((f) => (
-                        <option key={f.value} value={f.value}>
-                          {f.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        deleteStyle(s.id);
+                      }}
+                      disabled={styles.length <= 1}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        color: styles.length <= 1 ? '#3A3D44' : '#9BA0AA',
+                        cursor: styles.length <= 1 ? 'default' : 'pointer',
+                        flexShrink: 0,
+                      }}>
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                  {isOpen && (
+                    <div
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: '1fr 1fr',
+                        gap: 6,
+                        fontSize: 11,
+                        color: '#9BA0AA',
+                        padding: 10,
+                        borderTop: '1px solid #2A2D34',
+                      }}>
+                      <label>
+                        Line/badge outline
+                        <ColorSwatchPicker
+                          value={s.stroke}
+                          onChange={(v) => updateStyleField(s.id, 'stroke', v)}
+                        />
+                      </label>
+                      <label>
+                        Badge fill
+                        <ColorSwatchPicker
+                          value={s.badgeFill}
+                          onChange={(v) =>
+                            updateStyleField(s.id, 'badgeFill', v)
+                          }
+                        />
+                      </label>
+                      <label>
+                        Badge text
+                        <ColorSwatchPicker
+                          value={s.badgeText}
+                          onChange={(v) =>
+                            updateStyleField(s.id, 'badgeText', v)
+                          }
+                        />
+                      </label>
+                      <label>
+                        Line weight
+                        <input
+                          type='number'
+                          min='1'
+                          max='8'
+                          step='0.5'
+                          value={s.strokeWidth}
+                          onChange={(e) =>
+                            updateStyleField(
+                              s.id,
+                              'strokeWidth',
+                              parseFloat(e.target.value)
+                            )
+                          }
+                          style={inputStyle()}
+                        />
+                      </label>
+                      <label>
+                        Badge radius
+                        <input
+                          type='number'
+                          min='12'
+                          max='72'
+                          value={s.badgeRadius}
+                          onChange={(e) =>
+                            updateStyleField(
+                              s.id,
+                              'badgeRadius',
+                              parseInt(e.target.value, 10)
+                            )
+                          }
+                          style={inputStyle()}
+                        />
+                      </label>
+                      <label>
+                        Font size
+                        <input
+                          type='number'
+                          min='9'
+                          max='36'
+                          value={s.fontSize}
+                          onChange={(e) =>
+                            updateStyleField(
+                              s.id,
+                              'fontSize',
+                              parseInt(e.target.value, 10)
+                            )
+                          }
+                          style={inputStyle()}
+                        />
+                      </label>
+                      <label>
+                        Cap style
+                        <select
+                          value={s.cap}
+                          onChange={(e) =>
+                            updateStyleField(s.id, 'cap', e.target.value)
+                          }
+                          style={{ ...inputStyle(), width: '100%' }}>
+                          {CAP_OPTIONS.map((c) => (
+                            <option key={c} value={c}>
+                              {c}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Cap Size
+                        <input
+                          type='number'
+                          min='8'
+                          max='36'
+                          value={s.capSize ?? 8}
+                          onChange={(e) =>
+                            updateStyleField(
+                              s.id,
+                              'capSize',
+                              parseInt(e.target.value, 10)
+                            )
+                          }
+                          style={inputStyle()}
+                        />
+                      </label>
+                      <label title='Extra invisible padding, in exported pixels, added around this style&#39;s badge so its hotspot is easier to click'>
+                        Hotspot margin (px)
+                        <input
+                          type='number'
+                          min='0'
+                          max='24'
+                          value={s.hotspotMarginPx ?? 8}
+                          onChange={(e) =>
+                            updateStyleField(
+                              s.id,
+                              'hotspotMarginPx',
+                              Math.max(
+                                0,
+                                Math.min(24, parseInt(e.target.value, 10) || 0)
+                              )
+                            )
+                          }
+                          style={inputStyle()}
+                        />
+                      </label>
+                      <label style={{ gridColumn: 'span 2' }}>
+                        Font
+                        <select
+                          value={s.font}
+                          onChange={(e) =>
+                            updateStyleField(s.id, 'font', e.target.value)
+                          }
+                          style={{ ...inputStyle(), width: '100%' }}>
+                          {FONT_OPTIONS.map((f) => (
+                            <option key={f.value} value={f.value}>
+                              {f.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+                  )}
                 </div>
-              </div>
-            ))}
+              );
+            })}
             <button
               onClick={addStyle}
               style={{
